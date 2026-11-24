@@ -1,0 +1,26 @@
+[Unit]
+Description=WeMol Project Board
+After=network.target
+
+[Service]
+Type=simple
+User=project-board
+Group=project-board
+WorkingDirectory=/opt/project-board/current
+Environment=BOARD_PORT=48753
+Environment=BOARD_EMPTY=1
+Environment=BOARD_DATA_DIR=/var/lib/project-board
+EnvironmentFile=/etc/project-board/app.env
+ExecStart=/usr/bin/node /opt/project-board/current/server.mjs
+Restart=on-failure
+RestartSec=2
+StateDirectory=project-board
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

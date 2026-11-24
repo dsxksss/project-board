@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew Project Board IP HTTPS certificate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=/opt/project-board/certbot
+ExecStart=/opt/project-board/certbot/bin/certbot renew --quiet --config-dir /var/lib/project-board-acme/config --work-dir /var/lib/project-board-acme/work --logs-dir /var/lib/project-board-acme/logs --deploy-hook "/usr/bin/systemctl reload nginx"

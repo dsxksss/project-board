@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Project Board certificate renewal twice daily
+
+[Timer]
+OnCalendar=*-*-* 00,12:48:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=board-cert-renew.service
+
+[Install]
+WantedBy=timers.target
