@@ -10,6 +10,21 @@
 2. 按包内《安装与使用》启动看板并安装技能。本地分发版打开 [127.0.0.1:4390](http://127.0.0.1:4390/)，首次启动是空白看板。
 3. 在 Codex 中输入 `$local-project-board 查看当前任务，先只读`。也可以输入 `$local-project-board 把 TASK-001 改为进行中，保留已有说明`。请替换成实际任务编号。
 
+## 界面预览
+
+以下截图使用虚构的项目、任务和评论。
+
+### 分组列表
+
+![三个示例项目按组排列，包含任务说明和状态](docs/screenshots/example-task-list.png)
+
+### 状态看板
+
+![示例任务按待推进、进行中、待发布或部署、待测试和已完成分列](docs/screenshots/example-kanban.png)
+
+### 任务详情
+
+![帮助中心搜索示例任务的说明、属性、评论和任务引用](docs/screenshots/example-task-detail.png)
 
 ## 本地运行
 
