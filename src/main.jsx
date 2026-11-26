@@ -1,11 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as ContextMenu from '@radix-ui/react-context-menu';
 import * as HoverCard from '@radix-ui/react-hover-card';
 import {
   Archive, ArchiveRestore, ArrowLeft, AtSign, Building2, Check, ChevronRight, ClipboardList, Copy,
   FileText, History, ImagePlus, Inbox, Link2,
-  Pencil, Plus, Redo2, Undo2, X,
+  Pencil, Plus, Redo2, RefreshCw, Trash2, Undo2, X,
 } from 'lucide-react';
 import { Button } from './arc/button/button';
 import { Badge } from './arc/badge/badge';
@@ -31,12 +31,26 @@ import './style.css';
 const LANES = [
   { name:'待推进', stages:['待推进'], color:'slate' },
   { name:'进行中', stages:['进行中'], color:'blue' },
-  { name:'待测试', stages:['待发布','待部署'], color:'violet' },
-  { name:'待验收', stages:['待验收','待核对'], color:'amber' },
+  { name:'待发布 / 部署', stages:['待发布','待部署'], color:'violet' },
+  { name:'待测试', stages:['待验收','待核对'], color:'testing' },
   { name:'已完成', stages:['已完成'], color:'green' },
 ];
 const PROJECT_COLORS = ['teal','sky','violet','amber','sky','orchid'];
-const MODES = [{value:'list', label:'列表'}, {value:'board', label:'看板'}, {value:'archive', label:'已归档'}];
+const MODES = [{value:'list', label:'列表'}, {value:'board', label:'看板'}, {value:'archive', label:'已归档'}, {value:'trash', label:'回收站'}];
+const REFRESH_STORAGE = 'project-board:auto-refresh';
+const REFRESH_OPTIONS = [
+  {value:'15', label:'每 15 秒'}, {value:'30', label:'每 30 秒'},
+  {value:'60', label:'每 1 分钟'}, {value:'300', label:'每 5 分钟'}, {value:'0', label:'关闭'},
+];
+const refreshTime = new Intl.DateTimeFormat('zh-CN', {timeStyle:'medium', hour12:false});
+
+function loadRefreshInterval() {
+  try {
+    const value = localStorage.getItem(REFRESH_STORAGE);
+    if (REFRESH_OPTIONS.some(option => option.value === value)) return value;
+  } catch {}
+  return '30';
+}
 const ACTIVITY = [{value:'comments', label:'讨论'}, {value:'history', label:'操作历史'}];
 const PRIVATE = '私有化部署';
 const PERSONAL_CUSTOMER = {value:'自己', label:'私人'};
@@ -46,6 +60,8 @@ const EMPTY_COMMENT = { text:'', mentions:[] };
 const ALL = '__all__';
 const asOptions = values => values.map(value => ({value,label:value}));
 const withAll = (label, values) => [{value:ALL,label}, ...asOptions(values)];
+const stageLabel = stage => stage === '待验收' ? '待测试' : stage;
+const stageOptions = stages => stages.map(value => ({value,label:stageLabel(value)}));
 const dateFormat = new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', dateStyle:'medium', timeStyle:'short'});
 const date = value => dateFormat.format(new Date(value));
 const archiveDateFormat = new Intl.DateTimeFormat('zh-CN', {timeZone:'Asia/Shanghai', dateStyle:'medium', timeStyle:'medium'});
@@ -59,7 +75,7 @@ const titleOf = task => task.product && !task.title.startsWith('[' + task.produc
   ? '[' + task.product + '] ' + task.title : task.title;
 
 function taskRowText(task) {
-  return [titleOf(task), task.description || '', task.stage].map(value =>
+  return [titleOf(task), task.description || '', stageLabel(task.stage)].map(value =>
     /[\t\r\n"]/.test(value) ? '"' + value.replaceAll('"', '""') + '"' : value).join('\t');
 }
 
@@ -97,7 +113,8 @@ function ProjectBadge({project, projects, label = project}) {
 }
 
 function StageBadge({stage}) {
-  return <Badge className="task-stage-badge" data-stage={stage} size="sm">{stage}</Badge>;
+  const label = stageLabel(stage);
+  return <Badge className="task-stage-badge" data-stage={label} size="sm">{label}</Badge>;
 }
 
 function IconButton({className = '', ...props}) {
@@ -124,7 +141,7 @@ function TaskPreview({task, projects}) {
   </HoverCard.Portal>;
 }
 
-function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyRow, children}) {
+function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyRow, onDeletion, children}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const blockPreview = useRef(false);
@@ -150,7 +167,7 @@ function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyR
           <ContextMenu.Item className="task-context-item" onSelect={() => { location.hash = taskHref(task.id); }}>
             <FileText aria-hidden="true"/>打开详情
           </ContextMenu.Item>
-          {!task.archivedAt && <ContextMenu.Sub>
+          {!task.archivedAt && !task.deletedAt && <ContextMenu.Sub>
             <ContextMenu.SubTrigger className="task-context-item">
               <History aria-hidden="true"/>调整状态<ChevronRight className="task-context-chevron" aria-hidden="true"/>
             </ContextMenu.SubTrigger>
@@ -159,7 +176,7 @@ function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyR
                 <ContextMenu.RadioGroup value={task.stage} onValueChange={stage => onMove(task, stage)}>
                   {config.stages.map(stage => <ContextMenu.RadioItem className="task-context-item" key={stage} value={stage}>
                     <span className="task-context-check"><ContextMenu.ItemIndicator><Check aria-hidden="true"/></ContextMenu.ItemIndicator></span>
-                    {stage}
+                    {stageLabel(stage)}
                   </ContextMenu.RadioItem>)}
                 </ContextMenu.RadioGroup>
               </ContextMenu.SubContent>
@@ -170,6 +187,10 @@ function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyR
           </ContextMenu.Item>
           <ContextMenu.Item className="task-context-item" onSelect={() => onCopy(task)}>
             <Link2 aria-hidden="true"/>复制任务链接
+          </ContextMenu.Item>
+          <ContextMenu.Separator className="task-context-separator"/>
+          <ContextMenu.Item className="task-context-item" onSelect={() => onDeletion(task)}>
+            {task.deletedAt ? <><ArchiveRestore aria-hidden="true"/>恢复任务</> : <><Trash2 aria-hidden="true"/>删除任务</>}
           </ContextMenu.Item>
         </ContextMenu.Content>
       </ContextMenu.Portal>
@@ -336,20 +357,20 @@ function ArchiveBatch({timestamp, count, collapsed, onToggle, children}) {
   </section>;
 }
 
-function List({tasks, config, collapsedGroups, toggleGroup, archived, display, changeTitleWidth, onMove, wrapTask}) {
-  const stages = useMemo(() => asOptions(config.stages), [config.stages]);
+function List({tasks, config, collapsedGroups, toggleGroup, archived, trash, display, changeTitleWidth, onMove, wrapTask}) {
+  const stages = useMemo(() => stageOptions(config.stages), [config.stages]);
   const columns = useMemo(() => LIST_COLUMNS.map(column => {
     if (column.key === 'title') return {...column,width:display.titleWidth + '%'};
-    if (column.key === 'stage' && !archived) {
+    if (column.key === 'stage' && !archived && !trash) {
       return {...column,render:(_, task) => <ListStageSelect task={task} options={stages} onMove={onMove}/>};
     }
     return column;
-  }), [display.titleWidth, archived, stages, onMove]);
+  }), [display.titleWidth, archived, trash, stages, onMove]);
   function renderColumnControl(column) {
     return column.key === 'title' ? <ColumnWidthHandle value={display.titleWidth} onChange={changeTitleWidth}/> : null;
   }
-  if (!tasks.length) return <Empty icon={archived ? Archive : ClipboardList}
-    title={archived ? '没有符合条件的归档任务' : '没有符合条件的任务'}/>;
+  if (!tasks.length) return <Empty icon={trash ? Trash2 : archived ? Archive : ClipboardList}
+    title={trash ? '没有符合条件的已删除任务' : archived ? '没有符合条件的归档任务' : '没有符合条件的任务'}/>;
   const order = new Map(config.projects.map(([name], index) => [name, index]));
   function renderProjects(items, batchKey = '') {
     const groups = Map.groupBy(items, task => task.customer ? PRIVATE + ' · ' + customerLabel(task.customer) : task.project);
@@ -423,7 +444,7 @@ function TaskForm({task, config, customers, onClose, onSaved}) {
       <Input label="任务名称" autoFocus required name="title" maxLength={160} defaultValue={task.title}/>
       <div className="form-columns">
         <Select label="项目" name="project" value={project} options={asOptions(config.projects.map(([name])=>name))} onValueChange={setProject}/>
-        <Select label="状态" name="stage" defaultValue={task.stage || '待推进'} options={asOptions(config.stages)}/>
+        <Select label="状态" name="stage" defaultValue={task.stage || '待推进'} options={stageOptions(config.stages)}/>
       </div>
       {project === PRIVATE && <div className="form-columns">
         <CustomerInput customer={task.customer} customers={customers}/>
@@ -486,6 +507,13 @@ function App() {
   const editFormId = useId();
   const [archiveSelection, setArchiveSelection] = useState(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deletionBusy, setDeletionBusy] = useState(false);
+  const [refreshInterval, setRefreshInterval] = useState(loadRefreshInterval);
+  const [sync, setSync] = useState({at:0, failed:false});
+  const refreshVersion = useRef(0);
+  const refreshRequests = useRef(0);
+  const detailRequest = useRef(0);
   const [toast, setToast] = useState('');
   const toastTimer = useRef();
   function notify(message) {
@@ -493,14 +521,27 @@ function App() {
     setToast(message);
     toastTimer.current = setTimeout(() => setToast(''), 4000);
   }
-  async function refresh() {
-    const [list, audit] = await Promise.all([api('/tasks?archive=all'), api('/reviews')]);
-    setTasks(list.tasks);
-    setReviews(audit.reviews);
-  }
+  const refresh = useCallback(async () => {
+    const version = ++refreshVersion.current;
+    refreshRequests.current++;
+    try {
+      const [list, audit] = await Promise.all([api('/tasks?archive=all&deleted=all'), api('/reviews')]);
+      if (version !== refreshVersion.current) return;
+      setTasks(list.tasks);
+      setReviews(audit.reviews);
+      setSync({at:Date.now(), failed:false});
+    } catch (failure) {
+      if (version !== refreshVersion.current) return;
+      setSync(previous => ({...previous, failed:true}));
+      throw failure;
+    } finally {
+      refreshRequests.current--;
+    }
+  }, []);
   async function refreshDetail(id) {
+    const request = location.hash.split('/')[2] === id ? ++detailRequest.current : null;
     const current = await api('/tasks/' + id);
-    if (location.hash.split('/')[2] === id) setDetail(current);
+    if (request === detailRequest.current && location.hash.split('/')[2] === id) setDetail(current);
     return current;
   }
   async function start() {
@@ -509,6 +550,22 @@ function App() {
     catch (failure) { setError(failure.message || '连接失败'); }
   }
   useEffect(() => { start(); }, []);
+  useEffect(() => {
+    try { localStorage.setItem(REFRESH_STORAGE, refreshInterval); } catch {}
+  }, [refreshInterval]);
+  const refreshPaused = Boolean(route.taskId || form || archiveSelection || deleteTarget || copyFallback);
+  useEffect(() => {
+    if (!config || refreshPaused || refreshInterval === '0') return;
+    const tick = () => {
+      if (!document.hidden && !historyActivity.current.writes && !refreshRequests.current) refresh().catch(() => {});
+    };
+    const interval = setInterval(tick, Number(refreshInterval) * 1000);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [config, refreshInterval, refreshPaused, refresh]);
   useEffect(() => {
     try { localStorage.setItem(LIST_STORAGE, JSON.stringify(listDisplay)); } catch {}
   }, [listDisplay]);
@@ -520,10 +577,13 @@ function App() {
     setEditSession(current => current?.task.id === route.taskId ? current : null);
     if (!route.taskId) return;
     let current = true;
+    const request = ++detailRequest.current;
     setDetailError(null);
     api('/tasks/' + route.taskId).then(result => {
-      if (current) setDetail(result);
-    }).catch(failure => { if (current) setDetailError({id:route.taskId,message:failure.message}); });
+      if (current && request === detailRequest.current) setDetail(result);
+    }).catch(failure => {
+      if (current && request === detailRequest.current) setDetailError({id:route.taskId,message:failure.message});
+    });
     return () => { current = false; };
   }, [route.taskId]);
   const customers = useMemo(() => {
@@ -532,19 +592,23 @@ function App() {
     return [PERSONAL_CUSTOMER.value, ...[...names].sort()];
   }, [tasks]);
   const archiveView = mode === 'archive';
-  const visible = tasks.filter(task => Boolean(task.archivedAt) === archiveView
+  const trashView = mode === 'trash';
+  const inactiveView = archiveView || trashView;
+  const visible = tasks.filter(task => (trashView ? Boolean(task.deletedAt) : !task.deletedAt && Boolean(task.archivedAt) === archiveView)
     && (!scope.project || task.project === scope.project) && (!scope.customer || customerValue(task.customer) === scope.customer)
-    && (archiveView || !stage || task.stage === stage));
-  const completed = archiveView ? [] : visible.filter(task => task.stage === '已完成');
+    && (inactiveView || !stage || task.stage === stage));
+  const completed = inactiveView ? [] : visible.filter(task => task.stage === '已完成');
 
   async function withHistoryWrite(operation, reversing = false) {
     const activity = historyActivity.current;
     if (activity.reversing || (reversing && activity.writes)) throw new Error('正在保存，请稍后重试');
+    refreshVersion.current++;
     activity.writes++;
     activity.reversing = reversing;
     setHistoryBusy(true);
     try { return await operation(); }
     finally {
+      refreshVersion.current++;
       activity.writes--;
       activity.reversing = false;
       setHistoryBusy(activity.writes > 0);
@@ -604,6 +668,18 @@ function App() {
     }, true);
   }
 
+  async function removeComment(taskId, commentId) {
+    await withHistoryWrite(async () => {
+      await api('/tasks/' + taskId + '/comments/' + commentId, 'DELETE');
+      setDetail(previous => previous?.task.id === taskId ? {
+        ...previous, comments:previous.comments.filter(item => item.id !== commentId),
+      } : previous);
+      try { await refreshDetail(taskId); }
+      catch (failure) { notify('评论已删除，历史刷新失败：' + failure.message); return; }
+      notify('评论已删除');
+    }, true);
+  }
+
   async function changeArchive(selection, archived) {
     if (archiveBusy) return;
     setArchiveBusy(true);
@@ -628,6 +704,39 @@ function App() {
       setArchiveSelection(null);
     }
   }
+  async function changeDeletion(task) {
+    if (deletionBusy) return;
+    const deleted = !task.deletedAt;
+    setDeletionBusy(true);
+    try {
+      await withHistoryWrite(async () => {
+        const {task:updated, history} = await api('/tasks/' + task.id + '/deletion', 'POST', {
+          deleted, revision:task.revision,
+        });
+        if (history.length) setBoardHistory(previous => ({undo:[...previous.undo, history], redo:[]}));
+        setTasks(previous => previous.map(item => item.id === updated.id ? updated : item));
+        setDetail(previous => previous?.task?.id === updated.id ? {...previous, task:updated} : previous);
+      }, true);
+      setDeleteTarget(null);
+      notify(deleted ? '任务已移入回收站' : '任务已恢复');
+      if (route.taskId === task.id) refreshDetail(task.id).catch(failure => notify(failure.message));
+      refresh().catch(() => {});
+    } catch (failure) {
+      setDeleteTarget(null);
+      notify(failure.message);
+      refresh().catch(() => {});
+      if (route.taskId === task.id) refreshDetail(task.id).catch(() => {});
+    } finally {
+      setDeletionBusy(false);
+    }
+  }
+
+  function requestDeletion(task) {
+    if (historyActivity.current.writes) return;
+    if (task.deletedAt) changeDeletion(task);
+    else setDeleteTarget(task);
+  }
+
   async function moveTask(task, nextStage) {
     if (task.stage === nextStage) return;
     try {
@@ -635,7 +744,7 @@ function App() {
       setTasks(previous => previous.map(item => item.id === updated.id ? updated : item));
       setDetail(previous => previous?.task?.id === updated.id ? {...previous,task:updated} : previous);
       if (route.taskId === updated.id) await refreshDetail(updated.id);
-      notify('已更新为' + nextStage);
+      notify('已更新为' + stageLabel(nextStage));
     } catch (failure) {
       notify(failure.message);
       refresh().catch(() => {});
@@ -651,8 +760,8 @@ function App() {
     }
   }
   function wrapTask(task, trigger) {
-    return <TaskInteractions key={task.id} task={task} config={config} onMove={moveTask}
-      previewEnabled={!route.taskId && !form && !archiveSelection && !copyFallback}
+    return <TaskInteractions key={task.id} task={task} config={config} onMove={moveTask} onDeletion={requestDeletion}
+      previewEnabled={!refreshPaused}
       onCopy={item => copyTaskText(new URL(taskHref(item.id), location.href).href, '任务链接')}
       onCopyRow={item => copyTaskText(taskRowText(item), '整行内容', true)}>
       {trigger}
@@ -696,7 +805,11 @@ function App() {
     <main className="content" aria-label="任务工作区">
         {!config ? (error ? <Empty icon={Inbox} title="工作区加载失败">{error}<br/><Button onClick={start}>重试</Button></Empty> : <p className="loading">正在加载工作区…</p>)
         : route.reviews ? <Reviews reviews={reviews} tasks={tasks} onDecision={async (id, decision) => {
-          try { await api('/reviews/' + id, 'PATCH', {decision}); await refresh(); notify(decision === 'accepted' ? '已采纳建议' : '已忽略建议'); }
+          try {
+            await withHistoryWrite(() => api('/reviews/' + id, 'PATCH', {decision}));
+            await refresh();
+            notify(decision === 'accepted' ? '已采纳建议' : '已忽略建议');
+          }
           catch (failure) { notify(failure.message); }
         }}/>
         : <>
@@ -713,22 +826,31 @@ function App() {
               onValueChange={value => setScope({project:value === ALL ? '' : value, customer:''})}/></div>
             <div className="compact-select"><Select label="客户筛选" value={scope.customer || ALL} options={[{value:ALL,label:'全部客户'}, ...customers.map(value => ({value,label:customerLabel(value)}))]}
               onValueChange={value => setScope({project:value === ALL ? scope.project : PRIVATE, customer:value === ALL ? '' : value})}/></div>
-            {!archiveView && <div className="compact-select stage-filter"><Select label="状态筛选" value={stage || ALL} options={withAll('全部状态',config.stages)}
+            {!inactiveView && <div className="compact-select stage-filter"><Select label="状态筛选" value={stage || ALL} options={[{value:ALL,label:'全部状态'}, ...stageOptions(config.stages)]}
               onValueChange={value => setStage(value === ALL ? '' : value)}/></div>}
             {completed.length > 0 && <Button variant="secondary" size="sm" type="button" className="archive-action"
               onClick={() => setArchiveSelection(completed)} disabled={archiveBusy}><Archive/>归档已完成</Button>}
             {mode !== 'board' && <>
-              <div className={'compact-select' + (archiveView ? ' stage-filter' : '')}>
+              <div className={'compact-select' + (inactiveView ? ' stage-filter' : '')}>
                 <Select label="列表显示大小" value={listDisplay.size} options={LIST_SIZES}
                   onValueChange={size => setListDisplay(previous => ({...previous,size}))}/>
               </div>
               {(listDisplay.size !== LIST_DEFAULTS.size || listDisplay.titleWidth !== LIST_DEFAULTS.titleWidth) &&
                 <Button variant="ghost" size="sm" className="list-display-reset" type="button" onClick={() => setListDisplay(LIST_DEFAULTS)}>重置显示</Button>}
             </>}
+            <div className="refresh-controls" role="group" aria-label="数据刷新">
+              <Button variant="secondary" size="sm" type="button" disabled={historyBusy}
+                onClick={() => refresh().catch(failure => notify(failure.message))}><RefreshCw/>刷新</Button>
+              <div className="compact-select">
+                <Select label="自动刷新" value={refreshInterval} options={REFRESH_OPTIONS}
+                  renderValue={label => '自动刷新 · ' + label} onValueChange={setRefreshInterval}/>
+              </div>
+              <span className="refresh-status">{sync.failed ? '刷新失败' : sync.at > 0 ? '更新于 ' + refreshTime.format(sync.at) : ''}</span>
+            </div>
             <span className="result-count">{visible.length} 项任务</span>
           </div>
           {mode === 'board' ? <Board tasks={visible} config={config} onNew={newTask} onMove={moveTask} wrapTask={wrapTask}/> :
-            <List tasks={visible} config={config} archived={archiveView} display={listDisplay} onMove={moveTask} wrapTask={wrapTask}
+            <List tasks={visible} config={config} archived={archiveView} trash={trashView} display={listDisplay} onMove={moveTask} wrapTask={wrapTask}
               changeTitleWidth={titleWidth => setListDisplay(previous => previous.titleWidth === titleWidth ? previous : {...previous,titleWidth})}
               collapsedGroups={collapsedGroups} toggleGroup={name=>setCollapsedGroups(previous=>{
               const next = new Set(previous);
@@ -749,12 +871,14 @@ function App() {
           editor={editing && {...editing, form:editFormId, submit:saveEdit, cancel:closeDetail,
             changeProject:project => setEditSession(current => ({...current,project}))}}
           customers={customers} move={moveTask} notify={notify}
-          onArchive={archived => changeArchive([activeDetail.task], archived)} archiveBusy={archiveBusy} onComment={comment => {
+          onArchive={archived => changeArchive([activeDetail.task], archived)} archiveBusy={archiveBusy}
+          onDeletion={() => requestDeletion(activeDetail.task)} deletionBusy={deletionBusy} onComment={comment => {
             setDetail(previous => previous?.task?.id === comment.taskId ? {...previous,comments:[...previous.comments,comment]} : previous);
             refreshDetail(comment.taskId).catch(failure => notify(failure.message));
-          }} onUndo={reverseTaskHistory} historyBusy={historyBusy}/> : <p className="loading" role="status">正在加载任务…</p>}
+          }} onRemoveComment={removeComment} onUndo={reverseTaskHistory} historyBusy={historyBusy}/> : <p className="loading" role="status">正在加载任务…</p>}
     </Modal>}
     {form && config && <TaskForm task={form} config={config} customers={customers} onClose={() => setForm(null)} onSaved={item => {
+      refreshVersion.current++;
       setForm(null);
       setTasks(previous => [...previous,item]);
       setDetail({task:item,history:[],comments:[],mentions:[]});
@@ -776,6 +900,13 @@ function App() {
       <div className="modal-actions">
         <Button type="button" variant="secondary" disabled={archiveBusy} onClick={() => setArchiveSelection(null)}>取消</Button>
         <Button type="button" loading={archiveBusy} onClick={() => changeArchive(archiveSelection,true)}>确认归档</Button>
+      </div>
+    </Modal>}
+    {deleteTarget && <Modal label="删除任务" onClose={() => { if (!deletionBusy) setDeleteTarget(null); }}>
+      <p className="history-confirm-text">将「{titleOf(deleteTarget)}」移入回收站。任务及其评论和操作记录可恢复。</p>
+      <div className="modal-actions">
+        <Button type="button" variant="secondary" disabled={deletionBusy} onClick={() => setDeleteTarget(null)}>取消</Button>
+        <Button type="button" variant="danger" loading={deletionBusy} onClick={() => changeDeletion(deleteTarget)}>确认删除</Button>
       </div>
     </Modal>}
     <div className="toast-region">{toast && <Toast title={toast} duration={0}/>}</div>
@@ -890,9 +1021,9 @@ function CommentBody({comment, tasks, preview}) {
     </div>;
 }
 
-const FIELD_NAMES = {title:'任务名称', project:'项目', stage:'状态', customer:'客户', product:'产品', topic:'标签', description:'任务说明', evidence:'依据', archivedAt:'归档时间'};
-const HISTORY_NAMES = {created:'创建任务', updated:'修改任务', comment:'发表评论', review_suggested:'提交审阅建议',
-  review_accepted:'采纳审阅建议', review_dismissed:'忽略审阅建议', archived:'归档任务', restored:'恢复任务', undo:'撤销操作'};
+const FIELD_NAMES = {title:'任务名称', project:'项目', stage:'状态', customer:'客户', product:'产品', topic:'标签', description:'任务说明', evidence:'依据', archivedAt:'归档时间', deletedAt:'删除时间'};
+const HISTORY_NAMES = {created:'创建任务', updated:'修改任务', comment:'发表评论', comment_deleted:'删除评论', review_suggested:'提交审阅建议',
+  review_accepted:'采纳审阅建议', review_dismissed:'忽略审阅建议', archived:'归档任务', restored:'恢复归档任务', deleted:'删除任务', undeleted:'从回收站恢复', undo:'撤销操作'};
 const canRedo = entry => entry?.type === 'undo' && entry.reversal !== 'redo';
 
 function historyTitle(entry) {
@@ -904,7 +1035,9 @@ function historyTitle(entry) {
 }
 
 function changeLabel(field, value) {
-  return field === 'archivedAt' ? (value ? archiveDate(value) : '未归档') : (value || '（空）');
+  if (field === 'archivedAt') return value ? archiveDate(value) : '未归档';
+  if (field === 'deletedAt') return value ? archiveDate(value) : '未删除';
+  return (field === 'stage' ? stageLabel(value) : value) || '（空）';
 }
 
 function Differences({changes, reverse = false}) {
@@ -916,7 +1049,8 @@ function Differences({changes, reverse = false}) {
   </div>)}</dl>;
 }
 
-function TaskHistory({entries, ask, openComment, disabled}) {
+function TaskHistory({entries, comments, ask, openComment, disabled}) {
+  const visible = new Set(comments.map(comment => comment.id));
   const events = entries.map(entry => ({
     id:entry.id, at:entry.at, title:historyTitle(entry),
     actor:entry.author || (entry.source === 'cli' ? 'CLI' : '网页'),
@@ -925,12 +1059,12 @@ function TaskHistory({entries, ask, openComment, disabled}) {
     icon:entry.reversal === 'redo' ? <Redo2/> : entry.type === 'undo' ? <Undo2/> : <History/>,
     detail:<div className="history-entry">
       <Differences changes={entry.changes}/>
-      {entry.type === 'comment' && <div className="history-comment">
+      {entry.type === 'comment' && visible.has(entry.commentId) && <div className="history-comment">
         {entry.excerpt && <p>{entry.excerpt}</p>}
         {(!!entry.imageCount || !!entry.referenceCount) && <span>{entry.imageCount} 张图片 · {entry.referenceCount} 项引用</span>}
       </div>}
       <div className="history-actions">
-        {entry.type === 'comment' && entry.undoStatus === 'available' && <Button variant="ghost" size="sm" type="button"
+        {entry.type === 'comment' && visible.has(entry.commentId) && <Button variant="ghost" size="sm" type="button"
           onClick={() => openComment(entry.commentId)}>查看评论</Button>}
         {entry.undoStatus === 'available' ? <Button type="button" size="sm" variant="secondary"
           disabled={disabled} onClick={() => ask(entry)}>{canRedo(entry) ? <><Redo2/>重做</> : <><Undo2/>撤销</>}</Button>
@@ -971,13 +1105,35 @@ function HistoryConfirmation({entry, revision, onUndo, onClose}) {
   </Modal>;
 }
 
-function TaskDetail({detail, route, tasks, config, edit, editor, customers, move, notify, onComment, onUndo, onArchive, archiveBusy, historyBusy}) {
+function CommentDeletion({onConfirm, onClose}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function confirm() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try { await onConfirm(); onClose(); }
+    catch (failure) { setError(failure.message); }
+    finally { setBusy(false); }
+  }
+  return <Modal label="删除评论" onClose={() => { if (!busy) onClose(); }}>
+    <p className="history-confirm-text">删除后，可在任务的「操作历史」中撤销，恢复评论、图片和任务引用。</p>
+    {error && <Alert tone="danger" title={error}/>}
+    <div className="modal-actions">
+      <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>取消</Button>
+      <Button type="button" variant="danger" loading={busy} onClick={confirm}>确认删除</Button>
+    </div>
+  </Modal>;
+}
+
+function TaskDetail({detail, route, tasks, config, edit, editor, customers, move, notify, onComment, onRemoveComment, onUndo, onArchive, archiveBusy, onDeletion, deletionBusy, historyBusy}) {
   const { task, history = [], comments, mentions } = detail;
   const content = useRef(null);
   const [image, setImage] = useState(null);
   const [moving, setMoving] = useState(false);
   const [activity, setActivity] = useState('comments');
   const [historyTarget, setHistoryTarget] = useState(null);
+  const [commentTarget, setCommentTarget] = useState('');
   const undoEntry = history.find(entry => entry.undoStatus === 'available' && !canRedo(entry));
   const redoEntry = history.find(entry => entry.undoStatus === 'available' && canRedo(entry));
   const askHistory = entry => setHistoryTarget({entry, revision:task.revision});
@@ -1008,7 +1164,7 @@ function TaskDetail({detail, route, tasks, config, edit, editor, customers, move
   return <div className="detail" ref={content}>
     {editor && <form id={editor.form} onSubmit={editor.submit}/>}
     <div className="detail-head">
-      <div className="detail-kicker"><ProjectBadge project={task.project} projects={config.projects}/><span className="task-key">{task.id}</span>{task.archivedAt && <Badge size="sm">已归档</Badge>}</div>
+      <div className="detail-kicker"><ProjectBadge project={task.project} projects={config.projects}/><span className="task-key">{task.id}</span>{task.deletedAt ? <Badge size="sm">已删除</Badge> : task.archivedAt && <Badge size="sm">已归档</Badge>}</div>
       <div className="detail-actions">
         {editor ? <>
           <Button key="cancel" type="button" variant="secondary" disabled={editor.busy} onClick={editor.cancel}>取消</Button>
@@ -1018,13 +1174,18 @@ function TaskDetail({detail, route, tasks, config, edit, editor, customers, move
             title="撤销此任务的最近操作" onClick={() => askHistory(undoEntry)}><Undo2/>撤销</Button>
           <Button size="sm" variant="secondary" type="button" disabled={historyBusy || !redoEntry}
             title="重做此任务刚撤销的操作" onClick={() => askHistory(redoEntry)}><Redo2/>重做</Button>
-          {task.archivedAt ? <Button type="button" variant="secondary" loading={archiveBusy} onClick={() => onArchive(false)}><ArchiveRestore/>恢复任务</Button>
-            : task.stage === '已完成' && <Button type="button" variant="secondary" loading={archiveBusy} onClick={() => onArchive(true)}><Archive/>归档任务</Button>}
-          <Button key="edit" ref={editButton} type="button" variant="secondary" disabled={moving || archiveBusy} onClick={edit}><Pencil/>编辑任务</Button>
+          {task.deletedAt ? <Button type="button" variant="secondary" loading={deletionBusy}
+            disabled={historyBusy} onClick={onDeletion}><ArchiveRestore/>恢复任务</Button> : <>
+            {task.archivedAt ? <Button type="button" variant="secondary" loading={archiveBusy} onClick={() => onArchive(false)}><ArchiveRestore/>恢复归档</Button>
+              : task.stage === '已完成' && <Button type="button" variant="secondary" loading={archiveBusy} onClick={() => onArchive(true)}><Archive/>归档任务</Button>}
+            <Button type="button" variant="ghost" disabled={historyBusy || moving || archiveBusy} onClick={onDeletion}><Trash2/>删除任务</Button>
+            <Button key="edit" ref={editButton} type="button" variant="secondary" disabled={moving || archiveBusy} onClick={edit}><Pencil/>编辑任务</Button>
+          </>}
         </>}
       </div>
     </div>
     {historyTarget && <HistoryConfirmation {...historyTarget} onUndo={onUndo} onClose={() => setHistoryTarget(null)}/>}
+    {commentTarget && <CommentDeletion onClose={() => setCommentTarget('')} onConfirm={() => onRemoveComment(task.id, commentTarget)}/>}
     {editor?.error && <div className="detail-edit-error"><Alert tone="danger" title={editor.error}/></div>}
     <div className="detail-grid">
       <div className="detail-main">
@@ -1042,11 +1203,15 @@ function TaskDetail({detail, route, tasks, config, edit, editor, customers, move
           <TabsContent value="comments" forceMount hidden={activity !== 'comments'}>
             <CommentThread title="讨论" readOnly comments={threadComments} currentUser={{id:'我',name:'我'}} highlightedId={route.commentId}
               labels={{thread:'讨论',commentCount:count=>count + ' 条评论',empty:'暂无评论'}}
-              renderBody={item => <CommentBody comment={item.original} tasks={tasks} preview={setImage}/>}/>
-            <div className="surface composer-card"><CommentComposer task={task} tasks={tasks} onComment={onComment} notify={notify}/></div>
+              renderBody={item => <CommentBody comment={item.original} tasks={tasks} preview={setImage}/>}
+              renderActions={task.deletedAt ? undefined : item => <IconButton aria-label="删除评论"
+                className="comment-delete-action" disabled={historyBusy || editing} onClick={() => setCommentTarget(item.id)}>
+                <Trash2 aria-hidden="true"/>
+              </IconButton>}/>
+            {!task.deletedAt && <div className="surface composer-card"><CommentComposer task={task} tasks={tasks} onComment={onComment} notify={notify}/></div>}
           </TabsContent>
           <TabsContent value="history" forceMount hidden={activity !== 'history'}>
-            <TaskHistory entries={history} ask={askHistory} disabled={historyBusy || editing} openComment={commentId => {
+            <TaskHistory entries={history} comments={comments} ask={askHistory} disabled={historyBusy || editing} openComment={commentId => {
               setActivity('comments'); location.hash = taskHref(task.id) + '/comment/' + commentId;
             }}/>
           </TabsContent>
@@ -1058,15 +1223,15 @@ function TaskDetail({detail, route, tasks, config, edit, editor, customers, move
             <Select {...fieldProps} label="项目" name="project" value={editor.project}
               options={asOptions(config.projects.map(([name]) => name))} onValueChange={editor.changeProject}/>
             <Select {...fieldProps} label="状态" name="stage" defaultValue={editor.task.stage}
-              disabled={editor.busy || Boolean(editor.task.archivedAt)} options={asOptions(config.stages)}/>
+              disabled={editor.busy || Boolean(editor.task.archivedAt)} options={stageOptions(config.stages)}/>
             {editor.project === PRIVATE && <>
               <CustomerInput {...fieldProps} customer={editor.task.customer} customers={customers}/>
               <Select {...fieldProps} label="产品" name="product" defaultValue={editor.task.product || config.products[0]}
                 options={asOptions(config.products)}/>
             </>}
             <Input {...fieldProps} label="标签" name="topic" maxLength={32} defaultValue={editor.task.topic}/>
-          </div> : <dl><div><dt>状态</dt><dd className="compact-select"><Select label="更新任务状态" value={task.stage} disabled={moving || Boolean(task.archivedAt)}
-            options={asOptions(config.stages)} onValueChange={async value => {
+          </div> : <dl><div><dt>状态</dt><dd className="compact-select"><Select label="更新任务状态" value={task.stage} disabled={moving || Boolean(task.archivedAt || task.deletedAt)}
+            options={stageOptions(config.stages)} onValueChange={async value => {
               setMoving(true); await move(task,value); setMoving(false);
             }}/></dd></div>
             <div><dt>项目</dt><dd>{task.project}</dd></div>
@@ -1074,6 +1239,7 @@ function TaskDetail({detail, route, tasks, config, edit, editor, customers, move
             {task.product && <div><dt>产品</dt><dd>{task.product}</dd></div>}
             {task.topic && <div><dt>标签</dt><dd><Badge size="sm">{task.topic}</Badge></dd></div>}
             {task.archivedAt && <div><dt>归档时间</dt><dd><time dateTime={task.archivedAt}>{archiveDate(task.archivedAt)}</time></dd></div>}
+            {task.deletedAt && <div><dt>删除时间</dt><dd><time dateTime={task.deletedAt}>{archiveDate(task.deletedAt)}</time></dd></div>}
             <div><dt>最近更新</dt><dd><time dateTime={task.updated}>{date(task.updated)}</time></dd></div>
           </dl>}
         </section>

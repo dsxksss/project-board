@@ -79,9 +79,10 @@ function field(value, name, max, required = false) {
   return trimmed;
 }
 
-function taskIn(data, id) {
+function taskIn(data, id, { writable = false } = {}) {
   const found = data.tasks.find(task => task.id === id);
   if (!found) fail(404, '找不到任务 ' + id);
+  if (writable && found.deletedAt) fail(409, '任务已删除，请先从回收站恢复');
   return found;
 }
 
@@ -145,7 +146,7 @@ function setArchivedTasks(input, source) {
     const at = new Date().toISOString();
     const history = [];
     const tasks = selection.map(({ id, revision }) => {
-      const task = taskIn(next, id);
+      const task = taskIn(next, id, { writable:true });
       if (task.revision !== revision) fail(409, '有任务已更新，请刷新后重试');
       if (Boolean(task.archivedAt) === archived) return task;
       const changes = applyTaskFields(task, { archivedAt: archived ? at : '' });
@@ -153,6 +154,20 @@ function setArchivedTasks(input, source) {
       return task;
     });
     return { tasks, history };
+  });
+}
+
+function setTaskDeletion(id, { deleted, revision }, source) {
+  if (typeof deleted !== 'boolean' || !Number.isSafeInteger(revision)) {
+    fail(400, '请提供删除或恢复操作及任务版本');
+  }
+  return change(next => {
+    const task = taskIn(next, id);
+    if (task.revision !== revision) fail(409, '任务有更新，请刷新后重试');
+    if (Boolean(task.deletedAt) === deleted) return { task, history:[] };
+    const changes = applyTaskFields(task, { deletedAt: deleted ? new Date().toISOString() : '' });
+    const history = [recordHistory(next, task, source, deleted ? 'deleted' : 'undeleted', { changes })];
+    return { task, history };
   });
 }
 
@@ -171,7 +186,10 @@ function effectState(data, effect) {
 function undoStatus(data, task, entry, undoneIds) {
   if (!entry.changes?.length && !entry.effect) return 'view-only';
   if (undoneIds.has(entry.id)) return 'undone';
-  if (invalidArchivedStage(task, previousFields(entry)) ||
+  if (entry.effect?.type === 'comment' && data.history.findLast(item =>
+    item.effect?.type === 'comment' && item.effect.id === entry.effect.id) !== entry) return 'conflict';
+  if ((task.deletedAt && !entry.changes?.some(change => change.field === 'deletedAt')) ||
+      invalidArchivedStage(task, previousFields(entry)) ||
       entry.changes?.some(change => task[change.field] !== change.after)
     || (entry.effect && effectState(data, entry.effect) !== entry.effect.after)) return 'conflict';
   return 'available';
@@ -249,7 +267,7 @@ function prepareImage(entry) {
 }
 
 function addComment(id, input, source) {
-  taskIn(board, id);
+  taskIn(board, id, { writable:true });
   const text = field(input.text ?? '', '评论', 8000);
   const author = field(input.author ?? '我', '署名', 60, true);
   const references = input.references ?? [];
@@ -279,6 +297,20 @@ function addComment(id, input, source) {
   });
 }
 
+function deleteComment(taskId, commentId, source) {
+  return change(next => {
+    const task = taskIn(next, taskId, { writable:true });
+    const comment = next.comments.find(item => item.taskId === taskId && item.id === commentId);
+    if (!comment) fail(404, '找不到评论');
+    if (comment.withdrawn) return { commentId };
+    comment.withdrawn = true;
+    recordHistory(next, task, source, 'comment_deleted', {
+      commentId, effect: { type:'comment', id:commentId, before:true, after:false },
+    });
+    return { commentId };
+  });
+}
+
 function reviewDecision(reviewId, decision, source) {
   if (!['accepted', 'dismissed'].includes(decision)) fail(400, '无效的审阅操作');
   return change(next => {
@@ -287,6 +319,7 @@ function reviewDecision(reviewId, decision, source) {
     if (review.decision !== 'pending') fail(409, '该建议已处理');
     const task = taskIn(next, review.taskId);
     if (decision === 'accepted') {
+      if (task.deletedAt) fail(409, '任务已删除，请先从回收站恢复');
       if (task.revision !== review.revision || task.stage !== review.before) {
         fail(409, '建议生成后任务已有改动，请核对当前任务');
       }
@@ -339,8 +372,11 @@ async function handle(req, res) {
     const customer = url.searchParams.get('customer');
     const query = url.searchParams.get('q')?.toLowerCase();
     const archive = url.searchParams.get('archive') ?? 'active';
+    const deleted = url.searchParams.get('deleted') ?? 'exclude';
     if (!['active','archived','all'].includes(archive)) fail(400, '归档筛选必须为 active、archived 或 all');
+    if (!['exclude','only','all'].includes(deleted)) fail(400, '删除筛选必须为 exclude、only 或 all');
     const tasks = board.tasks.filter(task => (archive === 'all' || Boolean(task.archivedAt) === (archive === 'archived'))
+      && (deleted === 'all' || Boolean(task.deletedAt) === (deleted === 'only'))
       && (!project || task.project === project)
       && (!stage || task.stage === stage) && (!customer || task.customer === customer)
       && (!query || [task.id, taskDisplay(task), task.project, task.customer, task.topic, task.description].join(' ').toLowerCase().includes(query)));
@@ -363,10 +399,18 @@ async function handle(req, res) {
   if (method === 'POST' && path === '/api/tasks/history/reverse') {
     return json(res, reverseTaskAction(await readBody(req), sourceOf(req)));
   }
+  const deletion = path.match(/^\/api\/tasks\/([A-Z][A-Z0-9]*-\d+)\/deletion$/);
+  if (deletion && method === 'POST') {
+    return json(res, setTaskDeletion(deletion[1], await readBody(req), sourceOf(req)));
+  }
   const undo = path.match(/^\/api\/tasks\/([A-Z][A-Z0-9]*-\d+)\/history\/([a-f0-9-]{36})\/undo$/);
   if (undo && method === 'POST') {
     const { revision } = await readBody(req);
     return json(res, change(next => applyHistoryReversal(next, undo[1], undo[2], revision, sourceOf(req))));
+  }
+  const commentTarget = path.match(/^\/api\/tasks\/([A-Z][A-Z0-9]*-\d+)\/comments\/([a-f0-9-]{36})$/);
+  if (commentTarget && method === 'DELETE') {
+    return json(res, deleteComment(commentTarget[1], commentTarget[2], sourceOf(req)));
   }
   const target = path.match(/^\/api\/tasks\/([A-Z][A-Z0-9]*-\d+)(\/comments)?$/);
   if (target) {
@@ -382,7 +426,7 @@ async function handle(req, res) {
     if (!comments && method === 'PATCH') {
       const input = await readBody(req);
       const result = change(next => {
-        const task = taskIn(next, id);
+        const task = taskIn(next, id, { writable:true });
         if (input.revision !== task.revision) fail(409, '任务有更新，请刷新后再修改');
         const changes = applyTaskFields(task, taskFields(input, task));
         const history = changes.length ? [recordHistory(next, task, sourceOf(req), 'updated', { changes })] : [];
@@ -392,10 +436,13 @@ async function handle(req, res) {
     }
     if (comments && method === 'POST') return json(res, { comment: addComment(id, await readBody(req), sourceOf(req)) }, 201);
   }
-  if (method === 'GET' && path === '/api/reviews') return json(res, { reviews: board.reviews });
+  if (method === 'GET' && path === '/api/reviews') {
+    const deleted = new Set(board.tasks.filter(task => task.deletedAt).map(task => task.id));
+    return json(res, { reviews: board.reviews.filter(review => !deleted.has(review.taskId)) });
+  }
   if (method === 'POST' && path === '/api/reviews') {
     const input = await readBody(req);
-    const task = taskIn(board, input.taskId);
+    const task = taskIn(board, input.taskId, { writable:true });
     const cause = field(input.cause, '建议说明', 3000, true);
     const evidence = field(input.evidence, '依据', 3000, true);
     if (!STAGES.includes(input.after) || input.after === task.stage) fail(400, '请选择不同的有效目标状态');

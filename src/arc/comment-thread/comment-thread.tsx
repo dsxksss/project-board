@@ -144,6 +144,7 @@ export interface CommentThreadProps {
   title?: ReactNode;
   readOnly?: boolean;
   renderBody?: (comment: ThreadComment) => ReactNode;
+  renderActions?: (comment: ThreadComment) => ReactNode;
   highlightedId?: string;
   /** Emoji offered by the reaction picker. */
   reactions?: string[];
@@ -380,7 +381,7 @@ type Ui = { editing: string | null; confirming: string | null; picker: string | 
 
 export const CommentThread = forwardRef<HTMLElement, CommentThreadProps>(function CommentThread({
   comments, defaultComments = [], onCommentsChange, currentUser, people, resolved, defaultResolved = false, onResolvedChange,
-  title, readOnly = false, renderBody, highlightedId, reactions = DEFAULT_REACTIONS, placeholder = "Reply, or @mention someone", maxDepth = 2, nowLabel = "Just now", labels, className,
+  title, readOnly = false, renderBody, renderActions, highlightedId, reactions = DEFAULT_REACTIONS, placeholder = "Reply, or @mention someone", maxDepth = 2, nowLabel = "Just now", labels, className,
 }, forwardedRef) {
   const t = withDefaults(DEFAULT_LABELS, labels);
   const reduced = useReducedFlag();
@@ -468,6 +469,7 @@ export const CommentThread = forwardRef<HTMLElement, CommentThreadProps>(functio
               <header className={styles.meta}>
                 <span className={styles.name}>{comment.author.name}</span>
                 <span className={styles.time}>{comment.createdAt}{comment.edited && ` · ${t.edited}`}</span>
+                {renderActions?.(comment)}
               </header>
               {/* Editing swaps the body for a composer in place: the two cross-fade while the comment's height springs between them.
                   The picker and delete prompt can wrap onto a new line on narrow screens, so they spring the height too. */}

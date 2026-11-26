@@ -1,5 +1,6 @@
 :root {
   scrollbar-gutter: stable;
+  --stage-testing-color: #0f5b79;
   --body-font: Inter, "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
 }
 :root[data-theme="dark"] {
@@ -49,6 +50,8 @@ h1 { font-size: clamp(27px, 2.35vw, 36px); line-height: 1.25; font-weight: 750; 
 .board-history-controls button { white-space: nowrap; }
 .toolbar-divider { width: 1px; height: 25px; background: var(--border); margin: 0 3px; }
 .stage-filter { margin-left: auto; }
+.refresh-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.refresh-status { color: var(--text-secondary); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .list-display-reset { white-space: nowrap; }
 .archive-action { white-space: nowrap; }
 .result-count { color: var(--text-secondary); font-size: 13px; padding-left: 3px; white-space: nowrap; }
@@ -69,7 +72,7 @@ h1 { font-size: clamp(27px, 2.35vw, 36px); line-height: 1.25; font-weight: 750; 
 .stage-mark.slate { background: #d8e0e6; }
 .stage-mark.blue { background: #a8dbfa; }
 .stage-mark.violet { background: #d6bcf8; }
-.stage-mark.amber { background: #ffd0a0; }
+.stage-mark.testing { background: color-mix(in srgb, var(--stage-testing-color) 52%, white); }
 .stage-mark.green { background: #abeac7; }
 .lane-count { margin-left: auto; background: var(--surface-raised); border-radius: 6px; color: var(--text-secondary); font-size: 12px; min-width: 24px; padding: 2px 6px; text-align: center; font-variant-numeric: tabular-nums; }
 .lane-cards { display: grid; gap: 8px; padding: 0 8px 10px; }
@@ -112,7 +115,7 @@ h1 { font-size: clamp(27px, 2.35vw, 36px); line-height: 1.25; font-weight: 750; 
 .task-stage-badge[data-stage="进行中"] { --badge-background: #354d92; }
 .task-stage-badge[data-stage="待发布"] { --badge-background: #69418b; }
 .task-stage-badge[data-stage="待部署"] { --badge-background: #81470f; }
-.task-stage-badge[data-stage="待验收"] { --badge-background: #0f5b79; }
+.task-stage-badge[data-stage="待测试"] { --badge-background: var(--stage-testing-color); }
 .task-stage-badge[data-stage="待核对"] { --badge-background: #4d535b; }
 .task-stage-badge[data-stage="已完成"] { --badge-background: #116642; }
 .task-group-toggle { min-width: 0; max-width: 100%; --space-3: .5rem; }
@@ -300,6 +303,10 @@ h1 { font-size: clamp(27px, 2.35vw, 36px); line-height: 1.25; font-weight: 750; 
 .composer-tools .send { margin-left: auto; }
 .draft-images, .comment-images { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px; }
 .comment-images { margin: 8px 0 0; }
+.comment-delete-action { margin-inline-start: auto; flex: none; align-self: center; }
+@media (hover: hover) and (pointer: fine) {
+  article:not(:hover):not(:focus-within) .comment-delete-action { opacity: 0; pointer-events: none; }
+}
 .draft-images > div, .comment-images > button { position: relative; width: 104px; height: 78px; padding: 0; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-muted); }
 .draft-images img, .comment-images img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
 .comment-images > button:hover { border-color: var(--border-strong); }
@@ -392,6 +399,7 @@ h1 { font-size: clamp(27px, 2.35vw, 36px); line-height: 1.25; font-weight: 750; 
   box-shadow: var(--shadow-raised);
   font-size: var(--text-sm);
 }
+.task-context-separator { height: 1px; margin: 4px; background: var(--border); }
 .task-context-item {
   display: flex;
   align-items: center;
