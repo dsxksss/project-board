@@ -2,6 +2,12 @@
 
 推进台是一个可自建的项目任务看板。网页和 CLI 共用任务、讨论、审阅建议和操作历史。
 
+## 用 Agent 一句话开始
+
+```text
+请打开 https://github.com/dsxksss/project-board，按 README 下载本地安装包并安装 $local-project-board 技能，在这台电脑上启动推进台，验证网页和 CLI 可用后打开看板，并告诉我如何创建第一条任务。
+```
+
 ## 用 Agent 管理看板
 
 日常查进度、补充任务和核对操作历史时，推荐让 Agent 通过 CLI 操作看板。
