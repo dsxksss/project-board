@@ -2,6 +2,15 @@
 
 推进台是一个可自建的项目任务看板。网页和 CLI 共用任务、讨论、审阅建议和操作历史。
 
+## 用 Agent 管理看板
+
+日常查进度、补充任务和核对操作历史时，推荐让 Agent 通过 CLI 操作看板。
+
+1. 下载并解压[本地推进台 Skill 安装包](https://raw.githubusercontent.com/dsxksss/project-board/main/downloads/local-project-board-skill.zip)。包内含预构建的网页、CLI 和中文安装说明，需要 Node.js 22.12 或更高版本。
+2. 按包内《安装与使用》启动看板并安装技能。本地分发版打开 [127.0.0.1:4390](http://127.0.0.1:4390/)，首次启动是空白看板。
+3. 在 Codex 中输入 `$local-project-board 查看当前任务，先只读`。也可以输入 `$local-project-board 把 TASK-001 改为进行中，保留已有说明`。请替换成实际任务编号。
+
+
 ## 本地运行
 
 需要 Node.js 22.12 或更高版本。从仓库根目录运行以下命令。
