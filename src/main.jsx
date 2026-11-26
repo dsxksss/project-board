@@ -141,7 +141,7 @@ function TaskPreview({task, projects}) {
   </HoverCard.Portal>;
 }
 
-function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyRow, onDeletion, children}) {
+function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyRow, onDeletion, onPurge, children}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const blockPreview = useRef(false);
@@ -192,6 +192,9 @@ function TaskInteractions({task, config, previewEnabled, onMove, onCopy, onCopyR
           <ContextMenu.Item className="task-context-item" onSelect={() => onDeletion(task)}>
             {task.deletedAt ? <><ArchiveRestore aria-hidden="true"/>恢复任务</> : <><Trash2 aria-hidden="true"/>删除任务</>}
           </ContextMenu.Item>
+          {task.deletedAt && <ContextMenu.Item className="task-context-item" onSelect={() => onPurge(task)}>
+            <Trash2 aria-hidden="true"/>彻底删除
+          </ContextMenu.Item>}
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
@@ -731,6 +734,31 @@ function App() {
     }
   }
 
+  async function purgeTask(task) {
+    if (deletionBusy) return;
+    setDeletionBusy(true);
+    try {
+      const {imageCleanupPending} = await withHistoryWrite(async () => {
+        const result = await api('/tasks/' + task.id, 'DELETE', {revision:task.revision});
+        setTasks(previous => previous.filter(item => item.id !== task.id));
+        setDetail(previous => previous?.task?.id === task.id ? null : previous);
+        const removeEntries = actions => actions.map(action => action.filter(entry => entry.taskId !== task.id)).filter(action => action.length);
+        setBoardHistory(previous => ({undo:removeEntries(previous.undo),redo:removeEntries(previous.redo)}));
+        return result;
+      }, true);
+      if (location.hash.split('/')[2] === task.id) closeDetail();
+      notify(imageCleanupPending ? '任务已彻底删除，部分图片文件需要清理' : '任务已彻底删除');
+      refresh().catch(() => {});
+    } catch (failure) {
+      notify(failure.message);
+      refresh().catch(() => {});
+      if (route.taskId === task.id) refreshDetail(task.id).catch(() => {});
+    } finally {
+      setDeleteTarget(null);
+      setDeletionBusy(false);
+    }
+  }
+
   function requestDeletion(task) {
     if (historyActivity.current.writes) return;
     if (task.deletedAt) changeDeletion(task);
@@ -760,7 +788,7 @@ function App() {
     }
   }
   function wrapTask(task, trigger) {
-    return <TaskInteractions key={task.id} task={task} config={config} onMove={moveTask} onDeletion={requestDeletion}
+    return <TaskInteractions key={task.id} task={task} config={config} onMove={moveTask} onDeletion={requestDeletion} onPurge={setDeleteTarget}
       previewEnabled={!refreshPaused}
       onCopy={item => copyTaskText(new URL(taskHref(item.id), location.href).href, '任务链接')}
       onCopyRow={item => copyTaskText(taskRowText(item), '整行内容', true)}>
@@ -847,7 +875,7 @@ function App() {
               </div>
               <span className="refresh-status">{sync.failed ? '刷新失败' : sync.at > 0 ? '更新于 ' + refreshTime.format(sync.at) : ''}</span>
             </div>
-            <span className="result-count">{visible.length} 项任务</span>
+            <span className="result-count">{visible.length} 项任务{trashView && ' · 不自动清理'}</span>
           </div>
           {mode === 'board' ? <Board tasks={visible} config={config} onNew={newTask} onMove={moveTask} wrapTask={wrapTask}/> :
             <List tasks={visible} config={config} archived={archiveView} trash={trashView} display={listDisplay} onMove={moveTask} wrapTask={wrapTask}
@@ -872,7 +900,8 @@ function App() {
             changeProject:project => setEditSession(current => ({...current,project}))}}
           customers={customers} move={moveTask} notify={notify}
           onArchive={archived => changeArchive([activeDetail.task], archived)} archiveBusy={archiveBusy}
-          onDeletion={() => requestDeletion(activeDetail.task)} deletionBusy={deletionBusy} onComment={comment => {
+          onDeletion={() => requestDeletion(activeDetail.task)} onPurge={() => setDeleteTarget(activeDetail.task)}
+          deletionBusy={deletionBusy} onComment={comment => {
             setDetail(previous => previous?.task?.id === comment.taskId ? {...previous,comments:[...previous.comments,comment]} : previous);
             refreshDetail(comment.taskId).catch(failure => notify(failure.message));
           }} onRemoveComment={removeComment} onUndo={reverseTaskHistory} historyBusy={historyBusy}/> : <p className="loading" role="status">正在加载任务…</p>}
@@ -902,11 +931,17 @@ function App() {
         <Button type="button" loading={archiveBusy} onClick={() => changeArchive(archiveSelection,true)}>确认归档</Button>
       </div>
     </Modal>}
-    {deleteTarget && <Modal label="删除任务" onClose={() => { if (!deletionBusy) setDeleteTarget(null); }}>
-      <p className="history-confirm-text">将「{titleOf(deleteTarget)}」移入回收站。任务及其评论和操作记录可恢复。</p>
+    {deleteTarget && <Modal label={deleteTarget.deletedAt ? '彻底删除任务' : '删除任务'}
+      onClose={() => { if (!deletionBusy) setDeleteTarget(null); }}>
+      <p className="history-confirm-text">{deleteTarget.deletedAt
+        ? '将永久删除「' + titleOf(deleteTarget) + '」及其评论和操作历史。此操作无法撤销。'
+        : '将「' + titleOf(deleteTarget) + '」移入回收站。任务及其评论和操作记录可恢复。'}</p>
       <div className="modal-actions">
         <Button type="button" variant="secondary" disabled={deletionBusy} onClick={() => setDeleteTarget(null)}>取消</Button>
-        <Button type="button" variant="danger" loading={deletionBusy} onClick={() => changeDeletion(deleteTarget)}>确认删除</Button>
+        <Button type="button" variant="danger" loading={deletionBusy}
+          onClick={() => deleteTarget.deletedAt ? purgeTask(deleteTarget) : changeDeletion(deleteTarget)}>
+          {deleteTarget.deletedAt ? '确认彻底删除' : '确认删除'}
+        </Button>
       </div>
     </Modal>}
     <div className="toast-region">{toast && <Toast title={toast} duration={0}/>}</div>
@@ -1126,7 +1161,7 @@ function CommentDeletion({onConfirm, onClose}) {
   </Modal>;
 }
 
-function TaskDetail({detail, route, tasks, config, edit, editor, customers, move, notify, onComment, onRemoveComment, onUndo, onArchive, archiveBusy, onDeletion, deletionBusy, historyBusy}) {
+function TaskDetail({detail, route, tasks, config, edit, editor, customers, move, notify, onComment, onRemoveComment, onUndo, onArchive, archiveBusy, onDeletion, onPurge, deletionBusy, historyBusy}) {
   const { task, history = [], comments, mentions } = detail;
   const content = useRef(null);
   const [image, setImage] = useState(null);
@@ -1174,8 +1209,10 @@ function TaskDetail({detail, route, tasks, config, edit, editor, customers, move
             title="撤销此任务的最近操作" onClick={() => askHistory(undoEntry)}><Undo2/>撤销</Button>
           <Button size="sm" variant="secondary" type="button" disabled={historyBusy || !redoEntry}
             title="重做此任务刚撤销的操作" onClick={() => askHistory(redoEntry)}><Redo2/>重做</Button>
-          {task.deletedAt ? <Button type="button" variant="secondary" loading={deletionBusy}
-            disabled={historyBusy} onClick={onDeletion}><ArchiveRestore/>恢复任务</Button> : <>
+          {task.deletedAt ? <>
+            <Button type="button" variant="secondary" disabled={historyBusy || deletionBusy} onClick={onDeletion}><ArchiveRestore/>恢复任务</Button>
+            <Button type="button" variant="danger" disabled={historyBusy || deletionBusy} onClick={onPurge}><Trash2/>彻底删除</Button>
+          </> : <>
             {task.archivedAt ? <Button type="button" variant="secondary" loading={archiveBusy} onClick={() => onArchive(false)}><ArchiveRestore/>恢复归档</Button>
               : task.stage === '已完成' && <Button type="button" variant="secondary" loading={archiveBusy} onClick={() => onArchive(true)}><Archive/>归档任务</Button>}
             <Button type="button" variant="ghost" disabled={historyBusy || moving || archiveBusy} onClick={onDeletion}><Trash2/>删除任务</Button>

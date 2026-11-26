@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import demo from './demo.js';
@@ -18,6 +18,7 @@ if (publicOrigin && (publicOrigin.protocol !== 'https:' || publicOrigin.href !==
 }
 const maxImage = 4 * 1024 * 1024;
 const imageTypes = {png:'image/png', jpg:'image/jpeg', gif:'image/gif', webp:'image/webp'};
+const imagePath = /^\/images\/([a-f0-9]{64}\.(png|jpg|gif|webp))$/;
 const dist = join(root, 'dist');
 
 mkdirSync(imageDir, { recursive: true });
@@ -169,6 +170,44 @@ function setTaskDeletion(id, { deleted, revision }, source) {
     const history = [recordHistory(next, task, source, deleted ? 'deleted' : 'undeleted', { changes })];
     return { task, history };
   });
+}
+
+function nextReviewNumber(data) {
+  return data.nextReview ?? (Math.max(0, ...data.reviews.map(item => Number(item.id.slice(3)))) + 1);
+}
+
+function purgeTask(id, { revision }) {
+  if (!Number.isSafeInteger(revision)) fail(400, '请提供任务版本');
+  const detachedImages = change(next => {
+    const task = taskIn(next, id);
+    if (task.revision !== revision) fail(409, '任务有更新，请刷新后重试');
+    if (!task.deletedAt) fail(409, '只能彻底删除回收站里的任务');
+
+    const removedImages = new Set(next.comments.filter(comment => comment.taskId === id)
+      .flatMap(comment => comment.images.map(image => image.url)));
+    next.tasks = next.tasks.filter(item => item.id !== id);
+    next.comments = next.comments.filter(comment => comment.taskId !== id);
+    for (const comment of next.comments) {
+      comment.references = comment.references.filter(reference => reference !== id);
+      for (const image of comment.images) removedImages.delete(image.url);
+    }
+    next.nextReview = nextReviewNumber(next);
+    next.reviews = next.reviews.filter(review => review.taskId !== id);
+    next.history = next.history.filter(entry => entry.taskId !== id);
+    return [...removedImages];
+  });
+
+  let imageCleanupPending = false;
+  for (const url of detachedImages) {
+    const asset = url.match(imagePath);
+    if (!asset) continue;
+    try { rmSync(join(imageDir, asset[1]), { force:true }); }
+    catch (error) {
+      imageCleanupPending = true;
+      console.warn('无法清理已删除任务的附件', asset[1], error.code);
+    }
+  }
+  return { id, imageCleanupPending };
 }
 
 function previousFields(entry) {
@@ -357,10 +396,12 @@ async function handle(req, res) {
     res.end(readFileSync(file));
     return;
   }
-  const image = path.match(/^\/images\/([a-f0-9]{64}\.(png|jpg|gif|webp))$/);
+  const image = path.match(imagePath);
   if (method === 'GET' && image) {
     const file = join(imageDir, image[1]);
-    if (!existsSync(file)) fail(404, '图片不存在');
+    if (!existsSync(file) || !board.comments.some(comment => comment.images.some(image => image.url === path))) {
+      fail(404, '图片不存在');
+    }
     res.writeHead(200, { 'Content-Type': imageTypes[image[2]] });
     res.end(readFileSync(file));
     return;
@@ -423,6 +464,7 @@ async function handle(req, res) {
           taskId: comment.taskId, taskTitle: taskDisplay(taskIn(board, comment.taskId)), commentId: comment.id, created: comment.created,
         })) });
     }
+    if (!comments && method === 'DELETE') return json(res, purgeTask(id, await readBody(req)));
     if (!comments && method === 'PATCH') {
       const input = await readBody(req);
       const result = change(next => {
@@ -447,8 +489,9 @@ async function handle(req, res) {
     const evidence = field(input.evidence, '依据', 3000, true);
     if (!STAGES.includes(input.after) || input.after === task.stage) fail(400, '请选择不同的有效目标状态');
     const review = change(next => {
-      const lastNumber = Math.max(0, ...next.reviews.map(item => Number(item.id.slice(3))));
-      const item = { id: 'RV-' + String(lastNumber + 1).padStart(2, '0'), taskId: task.id,
+      const number = nextReviewNumber(next);
+      next.nextReview = number + 1;
+      const item = { id: 'RV-' + String(number).padStart(2, '0'), taskId: task.id,
         before: task.stage, after: input.after, cause, evidence, decision: 'pending', revision: task.revision };
       next.reviews.push(item);
       recordHistory(next, task, sourceOf(req), 'review_suggested', { reviewId: item.id });
